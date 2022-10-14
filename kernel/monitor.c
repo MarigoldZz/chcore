@@ -30,6 +30,14 @@ int stack_backtrace()
 	printk("Stack backtrace:\n");
 
 	// Your code here.
+	//zfb
+	u64* fp = (u64*) *((u64*)read_fp()); // 当前 FP 为调用 stack_backtrace 的函数的 FP，故加一层间接访问
+	while(fp != 0) { // 递归到没有父函数时停止
+		printk("LR %lx FP %lx Args ", *(fp + 1), fp, *(fp - 2));
+        printk("%d %d %d %d %d\n", *(fp - 2), *(fp - 1), *(fp), *(fp + 1), *(fp + 2));
+		fp = (u64*) *fp;
+	}
+	//zfb
 
 	return 0;
 }
