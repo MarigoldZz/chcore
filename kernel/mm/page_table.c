@@ -25,6 +25,8 @@
 
 #include "page_table.h"
 
+#include <common/kprint.h>
+
 /* Page_table.c: Use simple impl for debugging now. */
 
 extern void set_ttbr0_el1(paddr_t);
@@ -159,13 +161,54 @@ static int get_next_ptp(ptp_t * cur_ptp, u32 level, vaddr_t va,
  * Hint: check the return value of get_next_ptp, if ret == BLOCK_PTP
  * return the pa and block entry immediately
  */
+//zfb
 int query_in_pgtbl(vaddr_t * pgtbl, vaddr_t va, paddr_t * pa, pte_t ** entry)
 {
 	// <lab2>
+	ptp_t *cur_ptp = (ptp_t *)pgtbl;
+	ptp_t *next_ptp = NULL;
+	pte_t *next_pte = NULL;
+	int level = 0;
+	int err = 0;
 
+	// get page pte
+	while(level <= 3 &&
+		(err = get_next_ptp(cur_ptp, level, va, &next_ptp, &next_pte, false)) == NORMAL_PTP){
+		cur_ptp = next_ptp;
+		level++;
+	}
+
+	if(err == NORMAL_PTP){
+        // TODO: add hugepage support
+		if(level != 4) {
+			kwarn("query_in_pgtbl: level = %d < 4\n", level);
+			return -ENOMAPPING;
+		}
+
+		// page invalid
+		if(! next_pte->l3_page.is_valid || ! next_pte->l3_page.is_page){
+			return -ENOMAPPING;
+		}
+
+		// get phys addr
+		*pa = virt_to_phys((vaddr_t)next_ptp) + GET_VA_OFFSET_L3(va);
+		return 0;
+	}
+
+	// get an error
+	else if(err < 0) {
+		return err;
+	}
+
+	// should never be here
+	else {
+		kwarn("query_in_pgtbl: should never be here\n");
+		return err;
+	}
 	// </lab2>
 	return 0;
 }
+//zfb
 
 /*
  * map_range_in_pgtbl: map the virtual address [va:va+size] to 
@@ -182,14 +225,39 @@ int query_in_pgtbl(vaddr_t * pgtbl, vaddr_t va, paddr_t * pa, pte_t ** entry)
  * and it is convenient for you to call set_pte_flags to set the page
  * permission bit. Don't forget to call flush_tlb at the end of this function 
  */
+//zfb
 int map_range_in_pgtbl(vaddr_t * pgtbl, vaddr_t va, paddr_t pa,
-		       size_t len, vmr_prop_t flags)
+   	       size_t len, vmr_prop_t flags)
 {
-	// <lab2>
+   // <lab2>
+   for(const vaddr_t end_va = va + len; va < end_va; va += PAGE_SIZE, pa += PAGE_SIZE) {
+   	ptp_t *cur_ptp = (ptp_t *)pgtbl;
+   	ptp_t *next_ptp = NULL;
+   	pte_t *next_pte = NULL;
+   	int level = 0;
+   	int err = 0;
 
-	// </lab2>
-	return 0;
+   	// get and create L3 ptp
+   	while(level <= 2 &&
+   		(err = get_next_ptp(cur_ptp, level, va, &next_ptp, &next_pte, true)) == NORMAL_PTP){
+   		cur_ptp = next_ptp;
+   		level++;
+   	}
+
+   	// map phys addr
+   	u32 index = GET_L3_INDEX(va);
+   	next_pte = &(cur_ptp->ent[index]);
+   	next_pte->l3_page.is_valid = 1;
+   	next_pte->l3_page.is_page = 1;
+   	next_pte->l3_page.pfn = pa >> PAGE_SHIFT;
+   	set_pte_flags(next_pte, flags, KERNEL_PTE);
+   }
+   
+   flush_tlb();
+   // </lab2>
+   return 0;
 }
+//zfb
 
 
 /*
@@ -204,12 +272,36 @@ int map_range_in_pgtbl(vaddr_t * pgtbl, vaddr_t va, paddr_t pa,
  * call flush_tlb() at the end of function
  * 
  */
+//zfb
 int unmap_range_in_pgtbl(vaddr_t * pgtbl, vaddr_t va, size_t len)
 {
-	// <lab2>
+   // <lab2>
+   for(const vaddr_t end_va = va + len; va < end_va; va += PAGE_SIZE) {
+   	ptp_t *cur_ptp = (ptp_t *)pgtbl;
+   	ptp_t *next_ptp = NULL;
+   	pte_t *next_pte = NULL;
+   	int level = 0;
+   	int err = 0;
 
-	// </lab2>
-	return 0;
+   	// get L3 ptp
+   	while(level <= 2 &&
+   		(err = get_next_ptp(cur_ptp, level, va, &next_ptp, &next_pte, false)) == NORMAL_PTP){
+   		cur_ptp = next_ptp;
+   		level++;
+   	}
+
+   	if(err == NORMAL_PTP && level == 3 && cur_ptp != NULL) {
+   		// unmap page
+   		u32 index = GET_L3_INDEX(va);
+   		next_pte = &(cur_ptp->ent[index]);
+   		next_pte->pte = 0;
+   	}
+   }
+   
+   flush_tlb();
+   // </lab2>
+   return 0;
 }
+//zfb
 
 // TODO: add hugepage support for user space.

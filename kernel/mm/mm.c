@@ -48,12 +48,15 @@ unsigned long get_ttbr1(void)
  * 2. fill the block entry with corresponding attribution bit
  *
  */
+//zfb
 void map_kernel_space(vaddr_t va, paddr_t pa, size_t len)
 {
 	// <lab2>
-
+	vaddr_t *ttbr1 = (vaddr_t *)get_ttbr1();
+	map_range_in_pgtbl(ttbr1, va, pa, len, KERNEL_PT);
 	// </lab2>
 }
+//zfb
 
 void kernel_space_check(void)
 {

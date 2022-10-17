@@ -4,6 +4,20 @@
 
 #include "buddy.h"
 
+//zfb
+void page_append(struct phys_mem_pool *pool, struct page *page) {
+	struct free_list *free_list = &pool->free_lists[page->order];
+	list_add(&page->node, &free_list->free_list);
+	free_list->nr_free++;
+}
+
+void page_del(struct phys_mem_pool *pool, struct page *page) {
+	struct free_list *free_list = &pool->free_lists[page->order];
+	list_del(&page->node);
+	free_list->nr_free--;
+}
+//zfb
+
 /*
  * The layout of a phys_mem_pool:
  * | page_metadata are (an array of struct page) | alignment pad | usable memory |
@@ -86,14 +100,41 @@ static struct page *get_buddy_chunk(struct phys_mem_pool *pool,
  * you can invoke split_page recursively until the given page can not be splitted into two
  * smaller sub-pages.
  */
+//zfb
+// 递归的分割块，直到分割至指定大小
 static struct page *split_page(struct phys_mem_pool *pool, u64 order,
 			       struct page *page)
 {
 	// <lab2>
-	struct page *split_page = NULL;
-	return split_page;
+    // 禁止分割已分配的块
+	if (page->allocated) {
+		kwarn("Try to split an allocated page\n");
+		return 0;
+	}
+
+    // 标记块为未分配，并从 free_list 中删除
+	page->allocated = 0;
+	page_del(pool, page);
+
+    // 递归的分割块，直到 order 变成指定大小
+	while (page->order > order) {
+		// 先缩小 order，再找到对应的伙伴块
+        // 操作后原先的 page 就变成了当前 page 和 buddy_page
+        page->order--;
+		struct page *buddy_page = get_buddy_chunk(pool, page);
+
+        // 把 buddy_page 插入 free_list 中
+        if (buddy_page != NULL) {
+			buddy_page->allocated = 0;
+			buddy_page->order = page->order;
+			page_append(pool, buddy_page);
+		}
+	}
+
+	return page;
 	// </lab2>
 }
+//zfb
 
 /*
  * buddy_get_pages: get free page from buddy system.
@@ -103,14 +144,38 @@ static struct page *split_page(struct phys_mem_pool *pool, u64 order,
  * Hints: Find the corresonding free_list which can allocate 1<<order
  * continuous pages and don't forget to split the list node after allocation   
  */
+//zfb
+// 申请指定 order 的块
 struct page *buddy_get_pages(struct phys_mem_pool *pool, u64 order)
 {
 	// <lab2>
-	struct page *page = NULL;
+    // 找到一个非空的，足够大的 free_list
+	int current_order = order;
+	while (current_order < BUDDY_MAX_ORDER && pool->free_lists[current_order].nr_free <= 0)
+		current_order++;
+	
+    // 申请的 order 太大或者没有足够大的块能分配
+	if (current_order >= BUDDY_MAX_ORDER) {
+		kwarn("Try to allocate an buddy chunk greater than BUDDY_MAX_ORDER");
+		return NULL;
+	}
 
+    // 得到指定 free_list 的表头块
+	struct page *page = list_entry(pool->free_lists[current_order].free_list.next, struct page, node);
+	if (page == NULL){
+		kdebug("buddy get a NULL page\n");
+		return NULL;
+	}
+
+    // 分割块
+	split_page(pool, order, page);
+	
+	// 将返回的块标记为已分配
+	page->allocated = 1;
 	return page;
 	// </lab2>
 }
+//zfb
 
 /*
  * merge_page: merge the given page with the buddy page
@@ -121,14 +186,52 @@ struct page *buddy_get_pages(struct phys_mem_pool *pool, u64 order)
  * there is not corresponding buddy page. get_buddy_chunk
  * is helpful in this function.
  */
+//zfb
+// 对指定块向上递归的做合并操作
 static struct page *merge_page(struct phys_mem_pool *pool, struct page *page)
 {
 	// <lab2>
+    // 只能对空闲块做合并操作，禁止对已分配的块做合并操作
+	if (page->allocated) {
+		kwarn("Try to merge an allocated page\n", page);
+		return NULL;
+	}
 
-	struct page *merge_page = NULL;
-	return merge_page;
+    // 合并前先将空闲块从它所属的 free_list 中拆出来
+	page_del(pool, page);
+
+	// 递归地向上合并空闲块，循环停止地条件:
+    // 1) 当前块的 order 已达到允许的最大值
+    // 2) 找不到伙伴块或者无法与伙伴块合并
+	while (page->order < BUDDY_MAX_ORDER - 1) {
+		struct page* buddy_page = get_buddy_chunk(pool, page);
+        // 只能与等大的、空闲的伙伴块合并
+		if (buddy_page == NULL ||
+			buddy_page->allocated ||
+			buddy_page->order != page->order) {
+			break;
+		}
+
+        // 调整下位置，保证 page 为左伙伴， buddy_page 为右伙伴
+		if(page > buddy_page) {
+			struct page *tmp = buddy_page;
+			buddy_page = page;
+			page = tmp;
+		}
+
+        // 做合并，将 buddy_page 标记为已分配并从 free_list 中删除
+        // 将 page 的 order ++
+		buddy_page->allocated = 1;
+		page_del(pool, page);
+		page->order++;
+	}
+	
+    // 将合并后的块插入对应的 free_list 中
+	page_append(pool, page);
+	return page;
 	// </lab2>
 }
+//zfb
 
 /*
  * buddy_free_pages: give back the pages to buddy system
@@ -137,12 +240,26 @@ static struct page *merge_page(struct phys_mem_pool *pool, struct page *page)
  * 
  * Hints: you can invoke merge_page.
  */
+//zfb
+// 回收指定块
 void buddy_free_pages(struct phys_mem_pool *pool, struct page *page)
 {
 	// <lab2>
+    // 空闲的块无法被回收
+	if (!page->allocated) {
+		kwarn("Try to free a free page\n");
+		return;
+	}
 
+    // 将块标记为空闲，并插入到 free_list 中
+	page->allocated = 0;
+	page_append(pool, page);
+
+    // 递归的向上合并块
+	merge_page(pool, page);
 	// </lab2>
 }
+//zfb
 
 void *page_to_virt(struct phys_mem_pool *pool, struct page *page)
 {
